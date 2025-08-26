@@ -92,11 +92,70 @@ async def context_example():
     print(await ctx_list.slice(0, 6))  # 输出：[6, 5, 4, 3, 2, 1]
 ```
 
+### 生产者消费者模型：并发协作的正确姿势
+
+前世手写生产者消费者时，总在列表操作上栽跟头——要么漏数据，要么重复处理，加锁逻辑稍不注意就死锁。有了`asyncioList`，多协程协作变得像呼吸一样自然：
+
+```python
+import asyncio
+import random
+from asyncioList.AsyncioList import AsyncioList
+
+async def producer(name: str, queue: AsyncioList, max_items: int, done_event: asyncio.Event):
+    """生产者：生成数据并添加到列表（混合单条/批量操作）"""
+    for i in range(max_items):
+        await asyncio.sleep(random.uniform(0.1, 0.5))  # 模拟生产耗时
+        item = f"[{name}]产品_{i}_{random.randint(1000, 9999)}"
+        
+        if i % 3 != 0:  # 普通添加
+            await queue.append(item)
+            print(f"生产者{name} 添加: {item} | 当前长度: {await queue.length()}")
+        else:  # 批量添加（上下文管理器高效操作）
+            batch = [item, f"[{name}]批量产品_{i}_1", f"[{name}]批量产品_{i}_2"]
+            async with queue:
+                queue._items.extend(batch)
+            print(f"生产者{name} 批量添加{len(batch)}个元素")
+    done_event.set()  # 标记当前生产者完成
+
+async def consumer(name: str, queue: AsyncioList, producers_done: asyncio.Event):
+    """消费者：等待列表变化并处理元素"""
+    while True:
+        # 等待列表变化（超时1秒防阻塞）
+        changed = await queue.wait_for_change(timeout=1.0)
+        
+        # 退出条件：所有生产者完成且队列空
+        if producers_done.is_set() and await queue.is_empty():
+            print(f"消费者{name} 任务完成，退出")
+            break
+            
+        if changed or not await queue.is_empty():
+            # 处理所有可用元素
+            while not await queue.is_empty():
+                item = await queue.pop(0)  # 取出首个元素
+                await asyncio.sleep(random.uniform(0.2, 0.6))  # 模拟处理耗时
+                print(f"消费者{name} 处理完成: {item} | 剩余: {await queue.length()}")
+
+# 运行示例
+async def main():
+    queue = AsyncioList()
+    producers_done = asyncio.Event()
+    
+    # 3个生产者+2个消费者并发协作
+    await asyncio.gather(
+        *[producer(f"P{i+1}", queue, 5, producers_done) for i in range(3)],
+        *[consumer(f"C{i+1}", queue, producers_done) for i in range(2)]
+    )
+
+asyncio.run(main())
+```
+
+这个示例里，`asyncioList`默默搞定了所有锁管理：生产者并发添加不冲突，消费者安全读取不重复，批量操作还能通过上下文管理器减少锁开销——终于不用再为“谁先加锁谁后解锁”掉头发了。
+详细实例请看[example](example)目录
 
 ## 结尾(凑字数用的)
 
 `asyncioList`真的很简单，只是个小工具，但是在异步编程中操作列表时，总会遇到一些问题，比如race condition（竞态条件）、死锁等。这些问题都可以通过`asyncioList`来避免，避免了手动加锁解锁的繁琐代码，同时也避免了race condition的问题。
-发到pypi上~~只是方便自己拉~~，是为了帮助大家节省一点时间，少掉几根头发。
+发到pypi上~~只是方便自己拉~~是为了帮助大家节省一点时间，少掉几根头发。
 如果你的异步代码里也需要操作列表，欢迎使用`asyncioList`。
 
 ↑↑以上内容均由豆包生成
